@@ -75,14 +75,14 @@ class field_controller extends \core_customfield\field_controller {
         global $DB;
         if ($field->get_configdata_property('dynamicsql')) {
             $resultset = $DB->get_records_sql($field->get_configdata_property('dynamicsql'));
-            $options = array();
+            $options = [];
             foreach ($resultset as $key => $option) {
                 $options[format_string($key)] = format_string($option->data);// Multilang formatting.
             }
         } else {
-            $options = array();
+            $options = [];
         }
-        return array('' => get_string('choose')) + $options;
+        return ['' => get_string('choose')] + $options;
     }
 
     /**
@@ -93,49 +93,54 @@ class field_controller extends \core_customfield\field_controller {
      * @param array $files
      * @return array associative array of error messages
      */
-    public function config_form_validation(array $data, $files = array()) : array {
+    public function config_form_validation(array $data, $files = []): array {
         global $DB;
-        $err = array();
+        $err = [];
         try {
             $sql = $data['configdata']['dynamicsql'];
             if (!isset($sql) || $sql == '') {
                 $err['configdata[dynamicsql]'] = get_string('err_required', 'form');
             } else {
-                $resultset = $DB->get_records_sql($sql);
-                if (!$resultset) {
+                // First thing, we need to sanitze the sql.
+                if (!$this->sanitize_sql($sql)) {
                     $err['configdata[dynamicsql]'] = get_string('queryerrorfalse', 'customfield_dynamic');
                 } else {
-                    if (count($resultset) == 0) {
-                        $err['configdata[dynamicsql]'] = get_string('queryerrorempty', 'customfield_dynamic');
+                    $resultset = $DB->get_records_sql($sql);
+                    if (!$resultset) {
+                        $err['configdata[dynamicsql]'] = get_string('queryerrorfalse', 'customfield_dynamic');
                     } else {
-                        $firstval = reset($resultset);
-                        if (!object_property_exists($firstval, 'id')) {
-                            $err['configdata[dynamicsql]'] = get_string('queryerroridmissing', 'customfield_dynamic');
+                        if (count($resultset) == 0) {
+                            $err['configdata[dynamicsql]'] = get_string('queryerrorempty', 'customfield_dynamic');
                         } else {
-                            if (!object_property_exists($firstval, 'data')) {
-                                $err['configdata[dynamicsql]'] = get_string('queryerrordatamissing', 'customfield_dynamic');
-                            } else if (!empty($data['configdata']['defaultvalue'])) {
-                                // Def missing.
-                                $defaultvalue = $data['configdata']['defaultvalue'];
-                                $options = array_column($resultset, 'data', 'id');
-                                $values = explode(',', $defaultvalue);
+                            $firstval = reset($resultset);
+                            if (!object_property_exists($firstval, 'id')) {
+                                $err['configdata[dynamicsql]'] = get_string('queryerroridmissing', 'customfield_dynamic');
+                            } else {
+                                if (!object_property_exists($firstval, 'data')) {
+                                    $err['configdata[dynamicsql]'] = get_string('queryerrordatamissing', 'customfield_dynamic');
+                                } else if (!empty($data['configdata']['defaultvalue'])) {
+                                    // Def missing.
+                                    $defaultvalue = $data['configdata']['defaultvalue'];
+                                    $options = array_column($resultset, 'data', 'id');
+                                    $values = explode(',', $defaultvalue);
 
-                                if ($data['configdata']['multiselect'] == 0 && count($values) > 1) {
-                                    $err['configdata[defaultvalue]'] = get_string('queryerrormulipledefault',
-                                     'customfield_dynamic', count($values));
-                                } else if ($data['configdata']['multiselect'] == 0 && !array_key_exists($defaultvalue, $options)) {
-                                    $err['configdata[defaultvalue]'] = get_string('queryerrordefaultmissing',
-                                     'customfield_dynamic', $defaultvalue);
-                                } else {
-                                    foreach ($values as $val) {
-                                        if (!array_key_exists($val, $options)) {
-                                            $err['configdata[defaultvalue]'] = get_string('queryerrordefaultmissing',
-                                             'customfield_dynamic', $val);
-                                            break;
-                                        }
+                                    if ($data['configdata']['multiselect'] == 0 && count($values) > 1) {
+                                        $err['configdata[defaultvalue]'] = get_string(
+                                            'queryerrormulipledefault',
+                                            'customfield_dynamic',
+                                            count($values)
+                                        );
+                                    } else if ($data['configdata']['multiselect'] == 0 && !array_key_exists($defaultvalue, $options)) {
+                                        $err['configdata[defaultvalue]'] = get_string(
+                                            'queryerrordefaultmissing',
+                                            'customfield_dynamic',
+                                            $defaultvalue
+                                        );
+                                    } else {
+                                        // In this version of this plugin, we don't validate the default value, as ist can come from a filter.
                                     }
-                                }
 
+                                }
                             }
                         }
                     }
@@ -146,5 +151,39 @@ class field_controller extends \core_customfield\field_controller {
             $err['configdata[dynamicsql]'] = get_string('sqlerror', 'customfield_dynamic') . ': ' .$e->getMessage();
         }
         return $err;
+    }
+
+    /**
+     * Function to sanitize the sql.
+     *
+     * @param mixed $sql
+     *
+     * @return [type]
+     *
+     */
+    private function sanitize_sql($sql) {
+        // Normalize whitespace: convert tabs, newlines, multiple spaces to single space.
+        $normalized = preg_replace('/\s+/', ' ', strtolower($sql));
+
+        // List of forbidden SQL keywords (whole words only).
+        $forbidden = ['insert', 'update', 'delete', 'drop', 'alter', 'truncate', 'create', 'replace', 'merge', 'grant', 'revoke'];
+
+        foreach ($forbidden as $keyword) {
+            if (preg_match('/\b' . preg_quote($keyword, '/') . '\b/', $normalized)) {
+                return false;
+            }
+        }
+
+        // No chained statements.
+        if (strpos($normalized, ';') !== false) {
+            return false;
+        }
+
+        // Optional: Ensure it starts with SELECT.
+        if (stripos(trim($normalized), 'select') !== 0) {
+            return false;
+        }
+
+        return true;
     }
 }
